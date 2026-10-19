@@ -1,0 +1,5 @@
+{"id": "sample_000", "image": "sample_000.png", "label": "uniform"}
+{"id": "sample_001", "image": "sample_001.png", "label": "center_cluster"}
+{"id": "sample_002", "image": "sample_002.png", "label": "edge_ring"}
+{"id": "sample_003", "image": "sample_003.png", "label": "scratch"}
+{"id": "sample_004", "image": "sample_004.png", "label": "localized_cluster"}

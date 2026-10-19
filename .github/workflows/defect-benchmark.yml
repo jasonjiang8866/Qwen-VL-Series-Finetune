@@ -1,0 +1,23 @@
+name: Defect benchmark CPU checks
+on:
+  pull_request:
+    paths: ['defect_benchmark/**', '.github/workflows/defect-benchmark.yml']
+  push:
+    paths: ['defect_benchmark/**', '.github/workflows/defect-benchmark.yml']
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: pip install Pillow==11.3.0
+      - run: python -m unittest discover -s defect_benchmark/tests -v
+      - run: python -m defect_benchmark.synthetic --output /tmp/defect-fixtures
+      - run: python -m defect_benchmark.run --config defect_benchmark/configs/example.json --manifest /tmp/defect-fixtures/manifest.jsonl --backend mock --output /tmp/defect-smoke

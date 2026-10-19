@@ -1,0 +1,24 @@
+name: Wafer zero-shot CPU contract tests
+on:
+  pull_request:
+    paths: ['benchmarks/wafer_zero_shot/**', '.github/workflows/wafer-zero-shot.yml']
+  push:
+    paths: ['benchmarks/wafer_zero_shot/**', '.github/workflows/wafer-zero-shot.yml']
+permissions:
+  contents: read
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: pip install -r benchmarks/wafer_zero_shot/requirements-cpu.txt
+      - run: python -m unittest discover -s benchmarks/wafer_zero_shot/tests -v
+      - run: |
+          python -m benchmarks.wafer_zero_shot synthetic --output /tmp/wafer-synthetic.jsonl
+          python -m benchmarks.wafer_zero_shot run --backend mock --data /tmp/wafer-synthetic.jsonl --output /tmp/wafer-results

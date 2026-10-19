@@ -1,0 +1,16 @@
+{
+  "labels": {
+    "CENTER": "Defects concentrated in a compact central region.",
+    "RING": "Defects form a circumferential annulus with a relatively sparse center.",
+    "SCRATCH": "Defects aligned in a narrow, approximately straight track.",
+    "RANDOM": "Defects dispersed throughout the wafer without a dominant cluster, annulus or line.",
+    "EMPTY": "No inspection defect points are visible; the gray wafer boundary is not a defect."
+  },
+  "synthetic_patterns": {"CENTER": "center", "RING": "ring", "SCRATCH": "scratch", "RANDOM": "random", "EMPTY": "empty"},
+  "render": {"size": 448, "margin": 16, "dot_radius": 2},
+  "strategies": {
+    "definitions": "You classify inspection coordinate distribution maps, not surface photographs. Black dots are defects; the gray circle is the wafer boundary. Definitions:\n{definitions}\nReturn exactly one of: {labels}. No punctuation, JSON, explanation or extra text.",
+    "geometry": "You classify inspection coordinate maps. Black points represent defects; ignore the gray wafer outline. Compare central concentration, radial distribution, linear alignment and spatial spread internally. Definitions:\n{definitions}\nReturn exactly one label from {labels}, without explanation or punctuation.",
+    "contrastive": "Classify the spatial distribution of black inspection defect points. The gray circle is a boundary, not a defect. Definitions:\n{definitions}\nCompare the best matching class against alternatives; reject classes whose defining geometry is absent. Do not infer defect causes or texture. Output only one exact label from {labels}. No explanation or punctuation."
+  }
+}

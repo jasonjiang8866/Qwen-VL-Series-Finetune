@@ -4,7 +4,7 @@ import json
 import math
 import random
 from pathlib import Path
-from PIL import Image, ImageDraw
+from .render import render
 
 
 def generate(output, seed=42, per_class=2):
@@ -35,16 +35,14 @@ def generate(output, seed=42, per_class=2):
                 if x*x + y*y <= 1:
                     points.append([x, y])
             sid = f'sample_{len(rows):03d}'
-            image = Image.new('RGB', (512, 512), 'white')
-            draw = ImageDraw.Draw(image)
-            draw.ellipse((16, 16, 496, 496), outline='#888888', width=2)
-            for x, y in points:
-                px, py = 256 + x * 240, 256 - y * 240
-                draw.ellipse((px-1.5, py-1.5, px+1.5, py+1.5), fill='black')
+            image = render(points, size=512)
             image.save(root / f'{sid}.png')
             (root / f'{sid}.coordinates.json').write_text(json.dumps(points))
-            rows.append(dict(id=sid, image=f'{sid}.png', label=label))
+            rows.append(dict(id=sid, image=f'{sid}.png', label=label, synthetic=True))
     (root / 'manifest.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in rows))
+    coordinate_rows = [dict(id=r['id'], label=r['label'], synthetic=True, radius=1.0, center=[0.0, 0.0],
+                            coordinates=json.loads((root / f"{r['id']}.coordinates.json").read_text())) for r in rows]
+    (root / 'coordinates.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in coordinate_rows))
     (root / 'provenance.json').write_text(json.dumps(dict(synthetic=True, seed=seed, per_class=per_class,
         note='Procedural inspection coordinates; no production data; not representative of fab accuracy.'), indent=2))
     return root / 'manifest.jsonl'

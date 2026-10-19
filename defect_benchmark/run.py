@@ -1,5 +1,6 @@
 """Run with python -m defect_benchmark.run --help."""
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import math
@@ -8,7 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from .backends import BACKENDS
-from .core import build_prompt, load_config, load_manifest, metrics, parse_output, sha256
+from .core import STRATEGIES, build_prompt, load_config, load_manifest, metrics, parse_output, sha256
 
 
 def distribution(values):
@@ -22,10 +23,15 @@ def distribution(values):
 def execute(args):
     cfg = load_config(args.config)
     labels = [x['id'] for x in cfg['classes']]
-    rows = load_manifest(args.manifest, labels)
-    prompt = build_prompt(cfg)
+    prompt = build_prompt(cfg, args.prompt_strategy)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)  # never overwrite another run
+    rows = load_manifest(args.manifest, labels, out / 'inputs', cfg.get('render', {}))
+    synthetic_only = all(x['synthetic'] is True for x in rows)
+    real_only = all(x['synthetic'] is False for x in rows)
+    evidence = ('cpu_mock' if args.backend == 'mock' else
+                'gpu_synthetic' if synthetic_only else
+                'gpu_labeled_real_data' if real_only else 'gpu_unspecified_or_mixed_data')
     versions = {}
     for package in ['torch', 'transformers', 'accelerate', 'bitsandbytes', 'Pillow']:
         try:
@@ -39,7 +45,9 @@ def execute(args):
     metadata = dict(started_utc=datetime.now(timezone.utc).isoformat(), args=vars(args), config=cfg,
                     config_sha256=sha256(args.config), manifest_sha256=sha256(args.manifest),
                     samples=rows, python=platform.python_version(), versions=versions, code_commit=commit,
-                    status='initializing', synthetic_smoke_only=args.backend == 'mock')
+                    status='initializing', evidence_level=evidence, synthetic_only=synthetic_only,
+                    pipeline_test_only=args.backend == 'mock',
+                    prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest())
     def save_meta():
         (out / 'run.json').write_text(json.dumps(metadata, indent=2))
     save_meta()
@@ -62,6 +70,9 @@ def execute(args):
                 predictions.append(record)
         report = metrics([x['label'] for x in rows], [x['prediction'] for x in predictions], labels)
         report.update(backend=args.backend, model_quality_evaluation=args.backend != 'mock',
+                      evidence_level=evidence, synthetic_only=synthetic_only,
+                      real_fab_accuracy_validated=False,
+                      prompt_strategy=args.prompt_strategy, output_mode=args.output_mode,
                       latency_s=distribution([x['latency_s'] for x in predictions]),
                       generation_s=distribution([x['generation_s'] for x in predictions]),
                       peak_allocated_bytes=distribution([x['peak_allocated_bytes'] for x in predictions]),
@@ -94,6 +105,7 @@ def parser():
     p.add_argument('--max-pixels', type=int, default=262144)
     p.add_argument('--max-new-tokens', type=int, default=32)
     p.add_argument('--warmup', type=int, default=1)
+    p.add_argument('--prompt-strategy', choices=STRATEGIES, default='definitions')
     p.add_argument('--output-mode', choices=['constrained', 'strict'], default='constrained')
     return p
 

@@ -78,11 +78,13 @@ class TransformersBackend:
         length = inputs['input_ids'].shape[1]
         tokenizer = self.processor.tokenizer
         eos = tokenizer.eos_token_id
-        constraint = LabelConstraint(tokenizer, labels, length, eos)
-        if args.max_new_tokens < constraint.max_tokens:
-            raise ValueError(f'--max-new-tokens must be >= {constraint.max_tokens}')
+        constraint = None
+        if args.output_mode == 'constrained':
+            constraint = LabelConstraint(tokenizer, labels, length, eos)
+            if args.max_new_tokens < constraint.max_tokens:
+                raise ValueError(f'--max-new-tokens must be >= {constraint.max_tokens}')
         generation = GenerationConfig(do_sample=False, num_beams=1, max_new_tokens=args.max_new_tokens,
-                                      eos_token_id=eos, pad_token_id=tokenizer.pad_token_id or eos,
+                                      eos_token_id=eos, pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos,
                                       use_cache=True)
         extra = {'prefix_allowed_tokens_fn': constraint} if args.output_mode == 'constrained' else {}
         torch.cuda.synchronize(self.device)

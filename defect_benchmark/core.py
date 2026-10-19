@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from .render import render
 from pathlib import Path
 
 
@@ -29,9 +30,18 @@ def load_config(path):
     return cfg
 
 
-def build_prompt(cfg):
+STRATEGIES = {
+    "definitions": "Use the class definitions and decision rules below.",
+    "geometry": "Compare central concentration, radial distribution, linear alignment and spatial spread internally.",
+    "contrastive": "Compare the best matching class against alternatives; reject classes whose defining geometry is absent.",
+}
+
+
+def build_prompt(cfg, strategy="definitions"):
+    if strategy not in STRATEGIES:
+        raise ValueError("unknown prompt strategy")
     return '\n'.join([
-        cfg['system_prompt'],
+        cfg['system_prompt'], STRATEGIES[strategy],
         'This is a Defect Distribution Map: dots are inspection defect coordinates.',
         'It is NOT a Wafer Bin Map. Do not infer die pass/fail, yield or physical root cause.',
         'Classes (choose exactly one ID):',
@@ -41,7 +51,12 @@ def build_prompt(cfg):
     ])
 
 
-def load_manifest(path, classes):
+def load_manifest(path, classes, rendered_dir=None, render_options=None):
+    """One manifest contract: exactly one of image or coordinates per row.
+
+    Coordinates are inline x/y pairs with explicit center/radius in the same units.
+    Optional rendered_dir freezes all model inputs, including image-only rows.
+    """
     from PIL import Image
     path = Path(path).resolve()
     rows, seen = [], set()
@@ -53,13 +68,39 @@ def load_manifest(path, classes):
             raise ValueError(f'line {lineno}: missing/duplicate ID')
         if row.get('label') not in classes:
             raise ValueError(f'line {lineno}: unknown ground truth')
-        image = Path(row['image'])
-        if not image.is_absolute():
-            image = path.parent / image
-        image = image.resolve()
-        with Image.open(image) as im:
-            im.verify()
-        rows.append(dict(id=row['id'], image=str(image), label=row['label'], image_sha256=sha256(image)))
+        if 'synthetic' in row and type(row['synthetic']) is not bool:
+            raise ValueError('synthetic must be a boolean when supplied')
+        if ('image' in row) == ('coordinates' in row):
+            raise ValueError('provide exactly one of image or coordinates')
+        record = dict(id=row['id'], label=row['label'], synthetic=row.get('synthetic'))
+        destination = None
+        if rendered_dir is not None:
+            Path(rendered_dir).mkdir(parents=True, exist_ok=True)
+            destination = Path(rendered_dir) / f'{len(rows):06d}.png'
+        if 'coordinates' in row:
+            if destination is None:
+                raise ValueError('coordinate input requires rendered_dir')
+            image = render(row['coordinates'], radius=row['radius'], center=row['center'],
+                           **(render_options or {}))
+            image.save(destination)
+            record.update(input_type='coordinates', coordinates=row['coordinates'],
+                          center=row['center'], radius=row['radius'])
+        else:
+            source = Path(row['image'])
+            if not source.is_absolute():
+                source = path.parent / source
+            source = source.resolve()
+            with Image.open(source) as im:
+                im.verify()
+            record.update(input_type='image', source_image_sha256=sha256(source))
+            if destination is not None:
+                # Canonical RGB pixels; ignore orientation metadata consistently.
+                with Image.open(source) as im:
+                    im.convert('RGB').save(destination)
+            else:
+                destination = source
+        record.update(image=str(destination.resolve()), image_sha256=sha256(destination))
+        rows.append(record)
         seen.add(row['id'])
     if not rows:
         raise ValueError('empty dataset')
@@ -109,7 +150,9 @@ def metrics(truth, predictions, classes):
         tp = matrix[i][i]
         fn = sum(matrix[i]) - tp
         fp = sum(row[i] for row in matrix) - tp
-        per_class[label] = {'support': sum(matrix[i]), 'f1': 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0}
+        per_class[label] = {'support': sum(matrix[i]),
+                            'recall': tp / (tp + fn) if tp + fn else 0.0,
+                            'precision': tp / (tp + fp) if tp + fp else 0.0, 'f1': 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0}
     return {
         'n': len(truth), 'accuracy': sum(matrix[i][i] for i in range(len(classes))) / len(truth),
         'macro_f1': sum(x['f1'] for x in per_class.values()) / len(classes),

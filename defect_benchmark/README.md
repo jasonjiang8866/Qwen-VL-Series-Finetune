@@ -163,3 +163,63 @@ No model ranking is supplied. The additive GitHub Actions workflow runs CPU chec
 API references for the pinned inference version:
 - https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/qwen2_5_vl
 - https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/qwen3_vl
+
+## Unified benchmark (PR #1 + PR #2)
+
+`defect_benchmark` is the sole framework. See [INTEGRATION_REVIEW.md](INTEGRATION_REVIEW.md)
+for the code comparison, baseline decision and compatibility limitations.
+
+Use `--prompt-strategy definitions|geometry|contrastive`. All strategies share the exact
+same ordered class definitions and decision rules; only the reasoning instruction changes.
+Run the six controlled cells in separate processes, keeping all other options fixed:
+
+```bash
+for strategy in definitions geometry contrastive; do
+  for mode in constrained strict; do
+    python -m defect_benchmark.run \
+      --config defect_benchmark/configs/example.json \
+      --manifest defect_benchmark/fixtures/manifest.jsonl \
+      --backend mock --prompt-strategy "$strategy" --output-mode "$mode" \
+      --output "/tmp/ddm-${strategy}-${mode}"
+  done
+done
+```
+
+Replace `--backend mock` with a pinned model invocation for actual GPU experiments.
+The mock does not implement token generation, so these six runs check orchestration only;
+CPU adapter tests separately exercise both generation call contracts using fake objects.
+
+One manifest row accepts **exactly one** of `image` or inline `coordinates`:
+
+```json
+{"id":"synthetic_001","coordinates":[[0.1,0.2],[-0.2,0.1]],"radius":1.0,"center":[0.0,0.0],"label":"center_cluster","synthetic":true}
+```
+
+Coordinates use x-right/y-up with radius and center in matching physical units. Rendering
+rejects nonfinite/out-of-wafer points and uses config `render` (size, margin, dot_radius).
+Empty coordinates render an empty disk; the example taxonomy has no empty class, so define
+one explicitly before evaluating empty maps. No automatic mapping from PR #1's taxonomy.
+The synthetic generator also emits `coordinates.jsonl`; equivalent generated coordinate
+and image inputs produce the same frozen PNG hashes with the example render settings.
+Existing checked-in PNG fixtures preserve their earlier rendering and hashes.
+
+Each run snapshots model inputs as neutral numbered RGB PNGs under `inputs/`, records their
+hashes plus source-image hashes or coordinates, and adds an exact prompt SHA-256. Images
+are interpreted as stored pixels (EXIF orientation ignored). `synthetic: true|false` is
+optional on image/coordinate rows; omission means unknown, not real data. Only mark false
+for known real data. Input validation happens before model loading; an invalid input may
+leave an incomplete output directory, which should not be treated as a completed run.
+
+Results include per-class precision/recall/F1/support, strategy, output mode, and evidence:
+
+| `evidence_level` | Meaning |
+| --- | --- |
+| `cpu_mock` | Pipeline check; no real model, latency or VRAM measurement |
+| `gpu_synthetic` | Actual GPU backend on explicitly synthetic inputs |
+| `gpu_labeled_real_data` | GPU backend on user-declared real labeled inputs; not independent validation |
+| `gpu_unspecified_or_mixed_data` | Provenance absent or mixed |
+
+`model_quality_evaluation=true` only indicates a real backend, not representative data.
+`real_fab_accuracy_validated` remains false: the CLI cannot certify dataset quality,
+independence, taxonomy approval or representative fab accuracy. No GPU or fab validation
+was performed as part of this consolidation.

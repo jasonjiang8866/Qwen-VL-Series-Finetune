@@ -21,3 +21,11 @@ jobs:
       - run: python -m unittest discover -s defect_benchmark/tests -v
       - run: python -m defect_benchmark.synthetic --output /tmp/defect-fixtures
       - run: python -m defect_benchmark.run --config defect_benchmark/configs/example.json --manifest /tmp/defect-fixtures/manifest.jsonl --backend mock --output /tmp/defect-smoke
+      - name: Coordinate input and prompt/output matrix (mock only)
+        run: |
+          for strategy in definitions geometry contrastive; do
+            for mode in constrained strict; do
+              python -m defect_benchmark.run --config defect_benchmark/configs/example.json --manifest /tmp/defect-fixtures/coordinates.jsonl --backend mock --prompt-strategy "$strategy" --output-mode "$mode" --output "/tmp/ddm-${strategy}-${mode}"
+            done
+          done
+      - run: git diff --exit-code

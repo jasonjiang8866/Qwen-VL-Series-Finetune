@@ -82,6 +82,10 @@ cached weights to run offline. No image upload/network inference is performed; H
 may download public model/processor files unless offline mode is requested. `trust_remote_code`
 is disabled. Keep production manifests, images, outputs and filesystem paths private.
 
+For Hub models, the config's resolved commit is reused for the weights and processor/tokenizer
+loads within a run. This prevents a mutable ref from changing between those loads; it does
+not pin separate runs or hash a local model directory.
+
 Defaults: bf16, 16-bit weights, SDPA, min/max image pixel budgets 65,536/262,144,
 32 generated tokens, fixed seed 42, one untimed warmup. `--bits 4` (NF4) or `--bits 8`
 reduces weight memory but changes the experiment; record separately. `--dtype float16`
@@ -113,6 +117,11 @@ constant question. Paths are not inserted into model text. Use label-free source
   all complete labels. Label naming/token length can affect decisions. Hold IDs fixed.
 - `--output-mode strict`: free greedy generation with the same prompt; accepts only an exact
   ID after whitespace trimming. JSON, prose, case variations and multiple labels are invalid.
+- Generation explicitly disables checkpoint-default merging (`use_model_defaults=False`),
+  so a checkpoint's sampling defaults cannot override the benchmark's greedy settings.
+- Real-backend outputs record `finish_reason` (`eos` or `length`) and `truncated`.
+  A response without terminating EOS is invalid even if its text matches a class ID:
+  it may be the unfinished prefix of a longer answer. Raw text is retained.
 - Constraint mode's low invalid rate is enforced formatting, not evidence of semantic skill.
   Compare models within the same mode; strict mode separately measures instruction adherence.
 - Accuracy uses every sample. Invalid outputs count as errors and false negatives for their
@@ -159,6 +168,19 @@ fall back to a different model backend or unconstrained mode.
 CPU tests and mock flow are the available checks. Real Qwen2.5-VL/Qwen3-VL model loading,
 quantized inference, actual GPU latency/VRAM and real-data accuracy still require GPU execution.
 No model ranking is supplied. The additive GitHub Actions workflow runs CPU checks only.
+
+The separate `tests_cpu` suite uses real Transformers 4.57.1 and PyTorch/torchvision CPU
+implementations to check generation-config merging and image processing at patch sizes
+14/16, including slow/fast Qwen2 processors. CUDA admission and checkpoint weight loads
+remain mocked; missing dependencies fail rather than skip this suite. Run it in a separate
+CPU environment with torch 2.8.0, torchvision 0.23.0, transformers 4.57.1 and Pillow 11.3.0:
+
+```bash
+HF_HUB_OFFLINE=1 python -m unittest discover -s defect_benchmark/tests_cpu -v
+```
+
+See [CODE_REVIEW.md](CODE_REVIEW.md) for confirmed findings, processor smoke evidence,
+and the remaining GPU validation boundary.
 
 API references for the pinned inference version:
 - https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/qwen2_5_vl

@@ -29,3 +29,19 @@ jobs:
             done
           done
       - run: git diff --exit-code
+  transformers-cpu-contracts:
+    runs-on: ubuntu-latest
+    env:
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install transformers==4.57.1 Pillow==11.3.0
+      - name: Real CPU library contracts (no checkpoint weights or CUDA)
+        run: python -m unittest discover -s defect_benchmark/tests_cpu -v
+      - run: git diff --exit-code

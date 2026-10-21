@@ -75,15 +75,20 @@ class UnifiedTests(unittest.TestCase):
         from defect_benchmark.backends import TransformersBackend
         from test_benchmark import Tokenizer
         calls = {}
+        class Scalar(int):
+            def item(self): return int(self)
         class Inputs(dict):
             def to(self, device): return self
         class Output:
-            shape = (1, 24)
+            shape = (1, 25)
             def __getitem__(self, index):
                 calls['trim_start'] = index[1].start
-                return [97]
+                return [Scalar(97), Scalar(1)] if calls.get('terminated', True) else [Scalar(97)]
+        class TestTokenizer(Tokenizer):
+            def decode(self, ids, **kwargs):
+                return super().decode([x for x in ids if x != 1], **kwargs)
         class Processor:
-            tokenizer = Tokenizer()
+            tokenizer = TestTokenizer()
             tokenizer.eos_token_id = 1
             tokenizer.pad_token_id = 0
             def apply_chat_template(self, messages, **kwargs):
@@ -111,11 +116,20 @@ class UnifiedTests(unittest.TestCase):
                 with patch('defect_benchmark.backends.LabelConstraint', side_effect=AssertionError('strict must not build trie')):
                     result = backend.predict(path, 'system', ['a'])
                 self.assertEqual(result['raw_output'], 'a')
+                self.assertEqual(result['finish_reason'], 'eos')
+                self.assertFalse(result['truncated'])
                 self.assertEqual(calls['trim_start'], 23)
                 self.assertEqual(calls['processor']['images'][0].mode, 'RGB')
                 self.assertNotIn('token_type_ids', calls['generate'])
                 self.assertNotIn('prefix_allowed_tokens_fn', calls['generate'])
                 self.assertEqual(calls['generate']['generation_config'].pad_token_id, 0)
+                self.assertIs(calls['generate']['use_model_defaults'], False)
+                calls['terminated'] = False
+                result = backend.predict(path, 'system', ['a', 'ab'])
+                self.assertEqual(result['raw_output'], 'a')
+                self.assertTrue(result['truncated'])
+                self.assertEqual(result['finish_reason'], 'length')
+                calls['terminated'] = True
                 backend.args.output_mode = 'constrained'
                 backend.predict(path, 'system', ['a'])
                 self.assertIn('prefix_allowed_tokens_fn', calls['generate'])

@@ -63,7 +63,9 @@ def execute(args):
         with (out / 'predictions.jsonl').open('w') as file:
             for row in rows:
                 result = backend.predict(row['image'], prompt, labels)
-                prediction = parse_output(result['raw_output'], labels)
+                # A length-limited prefix can itself be a valid shorter label.
+                # Preserve the raw output, but never score an unfinished answer.
+                prediction = None if result.get('truncated', False) else parse_output(result['raw_output'], labels)
                 record = dict(**row, **result, prediction=prediction, valid=prediction is not None)
                 file.write(json.dumps(record) + '\n')
                 file.flush()

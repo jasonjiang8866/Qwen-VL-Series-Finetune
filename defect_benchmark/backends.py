@@ -35,6 +35,11 @@ class TransformersBackend:
         dtype = getattr(torch, args.dtype)
         common = dict(revision=args.revision, local_files_only=args.local_files_only, trust_remote_code=False)
         cfg = tr.AutoConfig.from_pretrained(args.model, **common)
+        # Resolve mutable refs once so weights/tokenizer/processor cannot drift
+        # from the config revision recorded in the results.
+        resolved_revision = getattr(cfg, '_commit_hash', None)
+        if resolved_revision is not None:
+            common['revision'] = resolved_revision
         names = {'qwen2_5_vl': 'Qwen2_5_VLForConditionalGeneration', 'qwen3_vl': 'Qwen3VLForConditionalGeneration'}
         if cfg.model_type not in names:
             raise ValueError(f'Unsupported {cfg.model_type}; add a backend adapter')
@@ -90,11 +95,17 @@ class TransformersBackend:
         torch.cuda.synchronize(self.device)
         generation_start = time.perf_counter()
         with torch.inference_mode():
-            output = self.model.generate(**inputs, generation_config=generation, **extra)
+            # In Transformers >=4.50 global-default values in GenerationConfig
+            # can be replaced by checkpoint defaults (including do_sample=True).
+            output = self.model.generate(**inputs, generation_config=generation,
+                                         use_model_defaults=False, **extra)
         torch.cuda.synchronize(self.device)
         generation_s = time.perf_counter() - generation_start
-        raw = tokenizer.decode(output[0, length:], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        generated = output[0, length:]
+        raw = tokenizer.decode(generated, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        terminated = bool(len(generated) and generated[-1].item() == eos)
         return dict(raw_output=raw, latency_s=time.perf_counter() - start, generation_s=generation_s,
+                    finish_reason='eos' if terminated else 'length', truncated=not terminated,
                     peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
                     peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device),
                     input_tokens=length, output_tokens=output.shape[1] - length,

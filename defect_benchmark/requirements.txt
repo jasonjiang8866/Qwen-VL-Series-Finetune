@@ -1,0 +1,6 @@
+# Separate inference environment; no DeepSpeed, PEFT, training imports or root requirements.
+# Install an appropriate CUDA torch/torchvision pair first (see README).
+transformers==4.57.1
+accelerate==1.10.1
+Pillow==11.3.0
+# Optional 4/8-bit weights: pip install bitsandbytes==0.48.1

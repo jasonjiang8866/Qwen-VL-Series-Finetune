@@ -1,0 +1,36 @@
+{
+  "system_prompt": "Classify the visible spatial distribution of inspection defect coordinates. Describe morphology only; do not diagnose a manufacturing process.",
+  "classes": [
+    {
+      "id": "uniform",
+      "description": "Defects broadly scattered across the disk without a dominant cluster, ring or line."
+    },
+    {
+      "id": "center_cluster",
+      "description": "A dominant compact concentration near the wafer center."
+    },
+    {
+      "id": "edge_ring",
+      "description": "A dominant annular concentration close to the wafer perimeter, spanning most angles."
+    },
+    {
+      "id": "scratch",
+      "description": "A dominant narrow elongated band or line of defects at any orientation."
+    },
+    {
+      "id": "localized_cluster",
+      "description": "A dominant compact off-center concentration, without a full edge ring."
+    }
+  ],
+  "rules": [
+    "The gray circumference is a wafer outline, not a defect ring. Only black dots are defects.",
+    "Ignore sparse background dots when a dominant structured pattern is present.",
+    "For this illustrative single-pattern taxonomy, use priority scratch > edge_ring > center_cluster > localized_cluster > uniform when patterns overlap.",
+    "Choose by spatial arrangement, not total point count. These categories do not indicate die bin status."
+  ],
+  "render": {
+    "size": 512,
+    "margin": 16,
+    "dot_radius": 2
+  }
+}

@@ -51,6 +51,7 @@ class TransformersBackend:
             kwargs['quantization_config'] = tr.BitsAndBytesConfig(
                 load_in_4bit=args.bits == 4, load_in_8bit=args.bits == 8,
                 bnb_4bit_compute_dtype=dtype, bnb_4bit_quant_type='nf4', bnb_4bit_use_double_quant=True)
+        load_start = time.perf_counter()
         self.model = cls.from_pretrained(args.model, **common, **kwargs).eval()
         self.processor = tr.AutoProcessor.from_pretrained(args.model, **common)
         # Both processors expose size budgets; Qwen3 uses a different patch size.
@@ -60,7 +61,16 @@ class TransformersBackend:
         if hasattr(self.processor.image_processor, 'min_pixels'):
             self.processor.image_processor.min_pixels = args.min_pixels
             self.processor.image_processor.max_pixels = args.max_pixels
-        self.metadata = dict(backend='transformers', model_quality_evaluation=True,
+        torch.cuda.synchronize(self.device)
+        quantized = [m for m in self.model.modules() if type(m).__name__ == 'Linear4bit']
+        self.metadata = dict(backend='transformers',
+                             model_load_and_processor_s=time.perf_counter() - load_start,
+                             loaded_in_4bit=getattr(self.model, 'is_loaded_in_4bit', False) is True,
+                             linear4bit_modules=len(quantized),
+                             quantized_compute_dtypes=sorted({str(m.compute_dtype) for m in quantized}),
+                             parameter_dtypes=sorted({str(p.dtype) for p in self.model.parameters()}),
+                             parameter_devices=sorted({str(p.device) for p in self.model.parameters()}),
+                             model_quality_evaluation=True,
                              model_type=cfg.model_type, resolved_model_revision=getattr(cfg, '_commit_hash', None),
                              gpu=torch.cuda.get_device_name(self.device), cuda=torch.version.cuda,
                              image_processor=self.processor.image_processor.to_dict(),
@@ -106,6 +116,7 @@ class TransformersBackend:
         terminated = bool(len(generated) and generated[-1].item() == eos)
         return dict(raw_output=raw, latency_s=time.perf_counter() - start, generation_s=generation_s,
                     finish_reason='eos' if terminated else 'length', truncated=not terminated,
+                    generated_token_ids=[int(token) for token in generated], eos_token_id=eos,
                     peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
                     peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device),
                     input_tokens=length, output_tokens=output.shape[1] - length,

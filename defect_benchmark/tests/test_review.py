@@ -29,6 +29,11 @@ class ReviewTests(unittest.TestCase):
                         min_pixels=3136, max_pixels=999999, patch_size=patch_size, to_dict=lambda: {})
                     processor = SimpleNamespace(image_processor=image_processor, chat_template='template')
                     loader = Mock()
+                    loaded = loader.from_pretrained.return_value.eval.return_value
+                    loaded.is_loaded_in_4bit = bits == 4
+                    quantized = type('Linear4bit', (), {'compute_dtype': 'torch.bfloat16'})()
+                    loaded.modules.return_value = [quantized] if bits == 4 else []
+                    loaded.parameters.return_value = [SimpleNamespace(dtype='torch.bfloat16', device='cuda:0')]
                     tr = SimpleNamespace(AutoConfig=Mock(), AutoProcessor=Mock(),
                         BitsAndBytesConfig=Mock(), set_seed=Mock(), **{model_class: loader})
                     tr.AutoConfig.from_pretrained.return_value = SimpleNamespace(model_type=model_type, _commit_hash='a'*40)
@@ -43,6 +48,11 @@ class ReviewTests(unittest.TestCase):
                     self.assertEqual((image_processor.min_pixels, image_processor.max_pixels), (65536, 262144))
                     self.assertEqual(image_processor.patch_size, patch_size)
                     self.assertEqual(backend.metadata['resolved_model_revision'], 'a'*40)
+                    self.assertEqual(backend.metadata['loaded_in_4bit'], bits == 4)
+                    self.assertEqual(backend.metadata['linear4bit_modules'], int(bits == 4))
+                    self.assertEqual(backend.metadata['parameter_devices'], ['cuda:0'])
+                    self.assertEqual(backend.metadata['parameter_dtypes'], ['torch.bfloat16'])
+                    self.assertEqual(backend.metadata['quantized_compute_dtypes'], ['torch.bfloat16'] if bits == 4 else [])
                     self.assertEqual(tr.AutoConfig.from_pretrained.call_args.kwargs['revision'], 'main')
                     for call in (loader.from_pretrained.call_args, tr.AutoProcessor.from_pretrained.call_args):
                         self.assertEqual(call.kwargs['revision'], 'a'*40)

@@ -41,6 +41,22 @@ python -m defect_benchmark.synthetic --output /tmp/ddm-fixtures --seed 42 --per-
 
 These idealized patterns are NOT representative validation data and cannot establish a ranking.
 
+## Automated single-GPU smoke matrix
+
+See [GPU_SMOKE.md](GPU_SMOKE.md) for RTX 5090 / existing RunPod deployment, pinned
+checkpoints and a sequential eight-cell bf16/NF4 × strict/constrained validation entrypoint:
+
+```bash
+python -m defect_benchmark.gpu_smoke --check-only --output /tmp/ddm-gpu-plan
+# In a separately prepared CUDA environment, with exactly one GPU visible:
+CUDA_VISIBLE_DEVICES=0 python -m defect_benchmark.gpu_smoke --output defect_benchmark/outputs/gpu-smoke-001
+```
+
+Check-only needs Pillow, not CUDA. It does not validate checkpoint loading or model quality.
+Every real cell retains its command, logs, failure status and original benchmark outputs;
+the summary separates infrastructure checks from strict EOS/instruction adherence.
+No GPU instance is provisioned. The existing fine-tuning environment is unaffected.
+
 ## Single-GPU inference environment
 
 Use a separate virtual environment; do not replace the training environment:

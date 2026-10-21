@@ -32,14 +32,19 @@ class TransformersCPUTests(unittest.TestCase):
                 processor = SimpleNamespace(image_processor=image_processor, chat_template='test')
                 args = parser().parse_args(['--config', 'unused', '--manifest', 'unused', '--output', 'unused'])
                 cfg = SimpleNamespace(model_type=model_type, _commit_hash=None)
+                loaded = Mock()
+                loaded.eval.return_value = loaded
+                loaded.modules.return_value = []
+                loaded.parameters.return_value = []
                 # Only CUDA admission and checkpoint loading are replaced. The real
                 # library image processor is initialized and preprocesses CPU pixels.
                 with patch.object(torch.cuda, 'is_available', return_value=True), \
                      patch.object(torch.cuda, 'set_device'), \
+                     patch.object(torch.cuda, 'synchronize'), \
                      patch.object(torch.cuda, 'is_bf16_supported', return_value=True), \
                      patch.object(torch.cuda, 'get_device_name', return_value='CPU-test-double'), \
                      patch.object(tr.AutoConfig, 'from_pretrained', return_value=cfg), \
-                     patch.object(getattr(tr, cls_name), 'from_pretrained', return_value=Mock()), \
+                     patch.object(getattr(tr, cls_name), 'from_pretrained', return_value=loaded), \
                      patch.object(tr.AutoProcessor, 'from_pretrained', return_value=processor):
                     backend = TransformersBackend(args)
                 self.assertEqual(image_processor.patch_size, patch_size)
@@ -104,6 +109,8 @@ class TransformersCPUTests(unittest.TestCase):
                 self.assertEqual(model.effective.repetition_penalty, 1.0)
                 self.assertEqual(output['raw_output'], 'a')
                 self.assertFalse(output['truncated'])
+                self.assertEqual(output['generated_token_ids'], [2, 1])
+                self.assertEqual(output['eos_token_id'], 1)
                 if mode == 'constrained':
                     self.assertIsInstance(model.constraint, LabelConstraint)
                     self.assertEqual(model.constraint(0, torch.tensor([9, 9, 2])), [1, 3])

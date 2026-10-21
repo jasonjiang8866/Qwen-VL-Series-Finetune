@@ -19,6 +19,8 @@ jobs:
           python-version: '${{ matrix.python }}'
       - run: pip install Pillow==11.3.0
       - run: python -m unittest discover -s defect_benchmark/tests -v
+      - name: GPU smoke configuration only (no CUDA or checkpoint download)
+        run: python -m defect_benchmark.gpu_smoke --check-only --output /tmp/ddm-gpu-plan
       - run: python -m defect_benchmark.synthetic --output /tmp/defect-fixtures
       - run: python -m defect_benchmark.run --config defect_benchmark/configs/example.json --manifest /tmp/defect-fixtures/manifest.jsonl --backend mock --output /tmp/defect-smoke
       - name: Coordinate input and prompt/output matrix (mock only)

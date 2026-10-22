@@ -30,6 +30,18 @@ jobs:
               python -m defect_benchmark.run --config defect_benchmark/configs/example.json --manifest /tmp/defect-fixtures/coordinates.jsonl --backend mock --prompt-strategy "$strategy" --output-mode "$mode" --output "/tmp/ddm-${strategy}-${mode}"
             done
           done
+      - name: Synthetic morphology stress matrix (CPU mock only)
+        run: |
+          python -m defect_benchmark.stress --output /tmp/ddm-stress --seed 42 --replicates 3
+          for strategy in definitions geometry contrastive; do
+            for mode in constrained strict; do
+              python -m defect_benchmark.run \
+                --config defect_benchmark/configs/example.json \
+                --manifest /tmp/ddm-stress/coordinates.jsonl --stress-suite \
+                --backend mock --prompt-strategy "$strategy" --output-mode "$mode" \
+                --output "/tmp/stress-${strategy}-${mode}"
+            done
+          done
       - run: git diff --exit-code
   transformers-cpu-contracts:
     runs-on: ubuntu-latest

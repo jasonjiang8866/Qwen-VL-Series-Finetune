@@ -37,6 +37,28 @@ A typo/unknown label is never interpreted as an unlabeled sample. A changed taxo
 config fails closed: update the generator's policy and schema deliberately before relabeling.
 Prompt strategy and strict/constrained decoding remain independent CLI options.
 
+### Image/coordinate content integrity
+
+Generation stores `stress.pixels_sha256` in both manifests, computed from the expected
+coordinate rendering. Its exact input is the ASCII header
+`ddm-rgb-v1\n{width}\n{height}\n` followed by row-major, 8-bit RGB pixel bytes.
+Dimensions are included; PNG compression, chunks, text and orientation metadata are not.
+The loader follows the existing RGB conversion without EXIF rotation.
+
+Before backend construction, the loader compares this fingerprint against the decoded
+image or freshly rendered coordinates, then freezes that same RGB image for inference.
+The observed `pixels_sha256` is retained in run/prediction records alongside existing file
+hashes. Coordinate count/hash and suite/config/pair validation still apply. Replacing a PNG,
+editing even one RGB pixel, or pairing coordinates with the wrong expected rendering fails.
+PNG re-encoding with identical decoded pixels is accepted. This checks preprocessor input;
+model-specific resizing/tokenization still occurs inside the unchanged backend.
+
+Earlier PR #3 datasets without `pixels_sha256` are rejected: regenerate them in a new
+directory. Do not backfill the expected hash from unverified PNGs. The suite is still
+pre-merge and uses the same v1 morphology/seed policy so coordinates remain reproducible.
+Manifests are the trusted reference: these fingerprints detect accidental corruption and
+mis-pairing, not coordinated rewriting of both data and expected hashes; they are not signatures.
+
 ## Perturbations and provisional semantic policy
 
 All geometry uses wafer-radius units, x-right/y-up and a fixed wafer outline; no auto-fit.
@@ -96,7 +118,7 @@ input substitute `coordinates.jsonl`. No inference was executed on a GPU during 
 All existing artifacts remain: `run.json`, frozen `inputs/`, prompt, raw predictions, latency,
 generation timing and VRAM. Each prediction also retains its stress metadata: source class,
 anchor ID, suite/source/perturbation seeds, replicate, family/level, exact parameters, count,
-coordinate/config SHA256, eligibility and rationale. `provenance.json` in the dataset records
+coordinate/config/pixel SHA256, eligibility and rationale. `provenance.json` in the dataset records
 manifest hashes, generator schema, seed scheme and render settings. Keep it with both
 manifests and images. `anchors/` retains the original generator's source files.
 
@@ -137,5 +159,15 @@ Tests cover deterministic bytes/seeds, repeat extension, perturbation geometry a
 image/coordinate equivalence, explicit opt-in, broken references/config rejection, ambiguous
 label exclusion, invalid-pair denominators, a known three-pair consistency calculation,
 constant-wrong predictions, runner failure artifacts and unchanged five-image defaults.
-CI also generates the full three-replicate suite and runs the six prompt/output cells with
-mock inference. No checkpoint download, enterprise data or CUDA is needed for those steps.
+Tests also reject valid-PNG replacement, single-pixel edits, coordinate/geometry mis-pairing,
+missing fingerprints and subpixel coordinate changes before backend construction; PNG
+re-encoding and text metadata changes with identical RGB pixels remain valid.
+CI generates the full three-replicate suite and runs both manifests through all six
+prompt/output cells (12 CPU mock runs). No checkpoint download, enterprise data or CUDA is
+needed for those steps.
+
+Independent CPU reproduction on parent commit `a172efe82cb8e5147941e53f853961fbb73bbb6a`
+confirmed that the old loader plus suite validator accepted all three cases: sample 00000's
+PNG replaced by sample 00011's valid PNG, one RGB pixel changed to red, and sample 00000's
+coordinates replaced by sample 00011's with a recomputed coordinate hash. The new regression
+tests reject these inputs while retaining the original five-image smoke behavior.

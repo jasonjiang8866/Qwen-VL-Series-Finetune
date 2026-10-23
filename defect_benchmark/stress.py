@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import random
 
-from .core import load_config, metrics, sha256
+from .core import load_config, metrics, pixel_sha256, sha256
 from .render import render
 from .synthetic import generate as generate_smoke
 
@@ -52,7 +52,9 @@ def generate(output, seed=42, replicates=3):
                       coordinates_sha256=fingerprint(points), config_sha256=fingerprint(cfg),
                       semantic_preserving=reference_id is not None and label is not None,
                       evaluation='exploratory' if label is None else 'labeled', rationale=rationale)
-        render(points, **render_options).save(root / f'{sid}.png')
+        image = render(points, **render_options)
+        stress['pixels_sha256'] = pixel_sha256(image)
+        image.save(root / f'{sid}.png')
         rows.append(dict(id=sid, coordinates=points, center=[0.0, 0.0], radius=1.0,
                          label=label, synthetic=True, stress=stress))
         return sid

@@ -14,6 +14,13 @@ def sha256(path):
     return h.hexdigest()
 
 
+def pixel_sha256(image):
+    """Hash decoded RGB pixels and dimensions, independent of PNG encoding/metadata."""
+    rgb = image.convert('RGB')
+    header = f'ddm-rgb-v1\n{rgb.width}\n{rgb.height}\n'.encode('ascii')
+    return hashlib.sha256(header + rgb.tobytes()).hexdigest()
+
+
 def load_config(path):
     cfg = json.loads(Path(path).read_text())
     classes = cfg.get('classes', [])
@@ -77,6 +84,10 @@ def load_manifest(path, classes, rendered_dir=None, render_options=None, *, stre
         record = dict(id=row['id'], label=row['label'], synthetic=row.get('synthetic'))
         if stress_suite:
             record['stress'] = row['stress']
+            expected_pixels = (row['stress'].get('pixels_sha256')
+                               if isinstance(row['stress'], dict) else None)
+            if not isinstance(expected_pixels, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_pixels):
+                raise ValueError(f"line {lineno}: stress pixels_sha256 required; regenerate the suite")
         destination = None
         if rendered_dir is not None:
             Path(rendered_dir).mkdir(parents=True, exist_ok=True)
@@ -86,7 +97,6 @@ def load_manifest(path, classes, rendered_dir=None, render_options=None, *, stre
                 raise ValueError('coordinate input requires rendered_dir')
             image = render(row['coordinates'], radius=row['radius'], center=row['center'],
                            **(render_options or {}))
-            image.save(destination)
             record.update(input_type='coordinates', coordinates=row['coordinates'],
                           center=row['center'], radius=row['radius'])
         else:
@@ -97,12 +107,19 @@ def load_manifest(path, classes, rendered_dir=None, render_options=None, *, stre
             with Image.open(source) as im:
                 im.verify()
             record.update(input_type='image', source_image_sha256=sha256(source))
-            if destination is not None:
-                # Canonical RGB pixels; ignore orientation metadata consistently.
-                with Image.open(source) as im:
-                    im.convert('RGB').save(destination)
-            else:
-                destination = source
+            # Decode once: validate the same canonical pixels that will be frozen.
+            # Ignore orientation metadata consistently with the existing loader.
+            with Image.open(source) as im:
+                image = im.convert('RGB')
+        if stress_suite:
+            actual_pixels = pixel_sha256(image)
+            if actual_pixels != expected_pixels:
+                raise ValueError(f"line {lineno}: stress pixel content mismatch for {row['id']}")
+            record['pixels_sha256'] = actual_pixels
+        if destination is not None:
+            image.save(destination)
+        else:
+            destination = source
         record.update(image=str(destination.resolve()), image_sha256=sha256(destination))
         rows.append(record)
         seen.add(row['id'])

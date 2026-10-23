@@ -10,9 +10,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from defect_benchmark.core import load_config, load_manifest
+from PIL import Image, PngImagePlugin
+
+from defect_benchmark.core import load_config, load_manifest, pixel_sha256
 from defect_benchmark.run import execute, parser
-from defect_benchmark.stress import CONFIG, generate, summarize, validate_suite
+from defect_benchmark.stress import CONFIG, fingerprint, generate, summarize, validate_suite
 from defect_benchmark.synthetic import generate as generate_smoke
 
 
@@ -96,6 +98,8 @@ class StressTests(unittest.TestCase):
             b = load_manifest(self.manifest.parent / 'coordinates.jsonl', self.labels,
                               root / 'coords', self.cfg['render'], stress_suite=True)
             self.assertEqual([r['image_sha256'] for r in a], [r['image_sha256'] for r in b])
+            self.assertEqual([r['pixels_sha256'] for r in a], [r['pixels_sha256'] for r in b])
+            self.assertTrue(all(r['pixels_sha256'] == r['stress']['pixels_sha256'] for r in a + b))
             self.assertEqual([r['stress'] for r in a], [r['stress'] for r in b])
             validate_suite(a, self.cfg)
             validate_suite(b, self.cfg)
@@ -104,13 +108,107 @@ class StressTests(unittest.TestCase):
                 row = dict(json.loads(self.manifest.read_text().splitlines()[0]), **patch_value)
                 row['image'] = str(self.manifest.parent / row['image'])
                 bad.write_text(json.dumps(row)+'\n')
-                if row['label'] is not None:
-                    with self.assertRaises(ValueError):
-                        load_manifest(bad, self.labels, root / 'bad', stress_suite=True)
+                with self.assertRaises(ValueError):
+                    load_manifest(bad, self.labels, root / 'bad', stress_suite=True)
+
+    def assert_rejected_before_backend(self, rows, root, message):
+        manifest = root / 'bad.jsonl'
+        manifest.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        args = parser().parse_args(['--config', str(CONFIG), '--manifest', str(manifest),
+            '--stress-suite', '--backend', 'transformers', '--output', str(root / 'run')])
+        with patch.dict('defect_benchmark.run.BACKENDS', transformers=unittest.mock.Mock()) as backends:
+            with self.assertRaisesRegex(ValueError, message):
+                execute(args)
+            backends['transformers'].assert_not_called()
+
+    def image_rows(self):
+        rows = [json.loads(s) for s in self.manifest.read_text().splitlines()]
+        for row in rows:
+            row['image'] = str(self.manifest.parent / row['image'])
+        return rows
+
+    def test_valid_png_replacement_rejected_before_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = self.image_rows()
+            # Another fully valid PNG with a different class/coordinate pattern.
+            rows[0]['image'] = rows[11]['image']
+            self.assert_rejected_before_backend(rows, Path(tmp), 'pixel content mismatch')
+
+    def test_valid_png_pixel_edit_rejected_before_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = self.image_rows()
+            with Image.open(rows[0]['image']) as source:
+                image = source.convert('RGB')
+            image.putpixel((0, 0), (255, 0, 0))
+            changed = root / 'edited.png'
+            image.save(changed)
+            with Image.open(changed) as check:
+                check.verify()  # It is still a valid, decodable PNG.
+            rows[0]['image'] = str(changed)
+            self.assert_rejected_before_backend(rows, root, 'pixel content mismatch')
+
+    def test_wrong_coordinates_and_geometry_rejected_before_backend(self):
+        for case in ('swapped', 'recomputed_coordinate_hash', 'radius', 'center'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                rows = copy.deepcopy(self.rows)
+                if case in ('swapped', 'recomputed_coordinate_hash'):
+                    rows[0]['coordinates'] = rows[11]['coordinates']
+                    if case == 'recomputed_coordinate_hash':
+                        rows[0]['stress']['coordinates_sha256'] = fingerprint(rows[0]['coordinates'])
+                elif case == 'radius':
+                    rows[0]['radius'] = 2.0
                 else:
-                    loaded = load_manifest(bad, self.labels, root / 'bad2', stress_suite=True)
-                    with self.assertRaises(ValueError):
-                        validate_suite(loaded, self.cfg)
+                    rows[0]['center'] = [.01, 0.0]
+                    rows[0]['radius'] = 1.1
+                self.assert_rejected_before_backend(rows, Path(tmp), 'pixel content mismatch')
+
+    def test_subpixel_coordinate_edit_still_checks_coordinate_hash(self):
+        # Raster equality alone cannot detect coordinate changes below a pixel.
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = copy.deepcopy(self.rows)
+            rows[0]['coordinates'][0][0] += 1e-12
+            self.assert_rejected_before_backend(rows, Path(tmp), 'coordinates do not match')
+
+    def test_missing_or_invalid_pixel_fingerprint_fails_closed(self):
+        for manifest_type in ('image', 'coordinates'):
+            for value in (None, '', 'g' * 64, 123):
+                with self.subTest(kind=manifest_type, value=value), tempfile.TemporaryDirectory() as tmp:
+                    rows = self.image_rows() if manifest_type == 'image' else copy.deepcopy(self.rows)
+                    if value is None:
+                        del rows[0]['stress']['pixels_sha256']
+                    else:
+                        rows[0]['stress']['pixels_sha256'] = value
+                    self.assert_rejected_before_backend(rows, Path(tmp), 'pixels_sha256 required')
+
+    def test_png_reencoding_and_metadata_do_not_change_pixel_fingerprint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = self.image_rows()[0]
+            source = Path(row['image'])
+            with Image.open(source) as im:
+                image = im.convert('RGB')
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text('Comment', 'Different encoding; identical model pixels')
+            changed = root / 'reencoded.png'
+            image.save(changed, compress_level=0, pnginfo=metadata)
+            self.assertNotEqual(source.read_bytes(), changed.read_bytes())
+            row['image'] = str(changed)
+            manifest = root / 'manifest.jsonl'
+            manifest.write_text(json.dumps(row) + '\n')
+            for freeze in (None, root / 'frozen'):
+                loaded = load_manifest(manifest, self.labels, freeze, stress_suite=True)
+                validate_suite(loaded, self.cfg)
+                self.assertEqual(loaded[0]['pixels_sha256'], row['stress']['pixels_sha256'])
+                with Image.open(loaded[0]['image']) as actual:
+                    self.assertEqual(pixel_sha256(actual), row['stress']['pixels_sha256'])
+
+    def test_pixel_fingerprint_binds_dimensions_and_normalizes_rgb(self):
+        # Identical byte streams with different shapes must not collide.
+        self.assertNotEqual(pixel_sha256(Image.new('RGB', (2, 3), 'white')),
+                            pixel_sha256(Image.new('RGB', (3, 2), 'white')))
+        self.assertEqual(pixel_sha256(Image.new('L', (3, 2), 255)),
+                         pixel_sha256(Image.new('RGB', (3, 2), 'white')))
 
     def test_semantic_and_pair_validation(self):
         cases = [('reference_id', 'missing'), ('source_seed', -1), ('seed', True),

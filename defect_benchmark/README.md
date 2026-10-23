@@ -57,6 +57,14 @@ Every real cell retains its command, logs, failure status and original benchmark
 the summary separates infrastructure checks from strict EOS/instruction adherence.
 No GPU instance is provisioned. The existing fine-tuning environment is unaffected.
 
+## Independent synthetic morphology stress suite
+
+See [STRESS_TEST.md](STRESS_TEST.md) for seeded density/noise/rotation/offset/partial-ring/
+mixed-pattern stress generation and paired prediction consistency. Opt in with
+`python -m defect_benchmark.stress` and the existing runner's `--stress-suite` flag.
+Ambiguous samples have null labels and are reported separately from accuracy. The default
+five-image GPU smoke and existing labeled-manifest behavior remain unchanged.
+
 ## Single-GPU inference environment
 
 Use a separate virtual environment; do not replace the training environment:
@@ -236,7 +244,7 @@ One manifest row accepts **exactly one** of `image` or inline `coordinates`:
 Coordinates use x-right/y-up with radius and center in matching physical units. Rendering
 rejects nonfinite/out-of-wafer points and uses config `render` (size, margin, dot_radius).
 Empty coordinates render an empty disk; the example taxonomy has no empty class, so define
-one explicitly before evaluating empty maps. No automatic mapping from PR #1's taxonomy.
+one explicitly before scoring empty maps, or use the stress suite to record them without ground truth. No automatic mapping from PR #1's taxonomy.
 The synthetic generator also emits `coordinates.jsonl`; equivalent generated coordinate
 and image inputs produce the same frozen PNG hashes with the example render settings.
 Existing checked-in PNG fixtures preserve their earlier rendering and hashes.

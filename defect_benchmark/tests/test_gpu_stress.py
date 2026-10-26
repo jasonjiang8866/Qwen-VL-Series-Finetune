@@ -226,7 +226,7 @@ class GPUStressTests(unittest.TestCase):
         self.assertLess(observed['classification']['accuracy'], 1)
         self.assertEqual(observed['invalid_output_rates']['labeled'], 0)
         self.assertGreater(observed['invalid_output_rates']['exploratory'], 0)
-        self.assertEqual(observed['measurements']['latency_s']['mean'], .2)
+        self.assertAlmostEqual(observed['measurements']['latency_s']['mean'], .2)
 
     def test_missing_or_modified_stress_evidence_fails_closed(self):
         cell, directory, labels, samples = self.fabricated_artifacts()

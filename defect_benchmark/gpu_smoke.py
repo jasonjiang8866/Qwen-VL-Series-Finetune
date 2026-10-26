@@ -15,8 +15,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import STRATEGIES, load_config, load_manifest, parse_output, sha256
-from .run import parser as benchmark_parser
+from .core import STRATEGIES, load_config, load_manifest, metrics, parse_output, sha256
+from .run import distribution, parser as benchmark_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'defect_benchmark/configs/example.json'
@@ -37,6 +37,10 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, help='New directory; never reused or overwritten')
     p.add_argument('--check-only', action='store_true')
+    p.add_argument('--stress-suite', action='store_true', help='Opt in to synthetic morphology evaluation')
+    p.add_argument('--manifest', help='Explicit stress image/coordinate manifest; requires --stress-suite')
+    p.add_argument('--stress-replicates', nargs='+', type=int,
+                   help='Select complete replicate IDs, retaining all anchors/variants (e.g. 0)')
     p.add_argument('--models', nargs='+', choices=MODELS, default=list(MODELS))
     p.add_argument('--bits', nargs='+', type=int, choices=[16, 4], default=[16, 4])
     p.add_argument('--output-modes', nargs='+', choices=['strict', 'constrained'], default=['strict', 'constrained'])
@@ -48,9 +52,15 @@ def parser():
     return p
 
 
-def build_plan(args, out):
+def build_plan(args, out, manifest=None):
     if args.repeats < 1 or args.timeout < 1 or args.max_new_tokens < 1:
         raise ValueError('repeats, timeout and max-new-tokens must be positive')
+    if args.stress_suite != bool(args.manifest):
+        raise ValueError('--stress-suite and an explicit --manifest must be supplied together')
+    if args.stress_replicates is not None and (not args.stress_suite or
+                                              any(r < 0 for r in args.stress_replicates)):
+        raise ValueError('--stress-replicates requires stress mode and nonnegative replicate IDs')
+    manifest = Path(manifest or args.manifest or MANIFEST).expanduser().resolve()
     plan = []
     for key in dict.fromkeys(args.models):
         model, revision = MODELS[key]
@@ -59,21 +69,62 @@ def build_plan(args, out):
                 for mode in dict.fromkeys(args.output_modes):
                     for repeat in range(1, args.repeats + 1):
                         name = f'{key}-bf16-{bits}bit-{strategy}-{mode}-r{repeat:02d}'
-                        cli = ['--config', str(CONFIG), '--manifest', str(MANIFEST),
+                        cli = ['--config', str(CONFIG), '--manifest', str(manifest),
                                '--output', str(out / name / 'benchmark'), '--backend', 'transformers',
                                '--model', model, '--revision', revision, '--device', 'cuda:0',
                                '--dtype', 'bfloat16', '--bits', str(bits), '--seed', '42',
                                '--min-pixels', '65536', '--max-pixels', '262144', '--warmup', '1',
                                '--max-new-tokens', str(args.max_new_tokens),
                                '--prompt-strategy', strategy, '--output-mode', mode]
+                        if args.stress_suite:
+                            cli.append('--stress-suite')
                         if args.local_files_only:
                             cli.append('--local-files-only')
                         # Catch drift from the existing CLI without importing torch.
                         benchmark_parser().parse_args(cli)
                         plan.append(dict(name=name, model=model, revision=revision, bits=bits,
+                                         stress_suite=args.stress_suite, manifest=str(manifest),
                                          mode=mode, strategy=strategy,
                                          command=[sys.executable, '-m', 'defect_benchmark.run', *cli]))
     return plan
+
+
+def prepare_inputs(args, out):
+    """Validate the entire source before selecting whole, pair-closed replicates."""
+    cfg = load_config(CONFIG)
+    labels = [x['id'] for x in cfg['classes']]
+    source = Path(args.manifest or MANIFEST).expanduser().resolve()
+    rows = load_manifest(source, labels, out / 'fixture_check', cfg.get('render', {}),
+                         stress_suite=args.stress_suite)
+    if not all(row['synthetic'] is True for row in rows):
+        raise ValueError('Smoke entrypoint accepts only explicit synthetic inputs')
+    source_count = len(rows)
+    manifest = source
+    if args.stress_suite:
+        from .stress import validate_suite
+        validate_suite(rows, cfg)
+        if args.stress_replicates is not None:
+            requested = set(args.stress_replicates)
+            available = {r['stress']['replicate'] for r in rows}
+            if not requested <= available:
+                raise ValueError(f'unknown stress replicate IDs: {sorted(requested - available)}')
+            rows = [r for r in rows if r['stress']['replicate'] in requested]
+        validate_suite(rows, cfg)
+        # The child sees exactly these validated RGB pixels, never a mutable source PNG.
+        manifest = out / 'selected_manifest.jsonl'
+        manifest.write_text(''.join(json.dumps({k: r[k] for k in
+                            ('id', 'image', 'label', 'synthetic', 'stress')}) + '\n' for r in rows))
+    evidence = dict(config_sha256=sha256(CONFIG), manifest_sha256=sha256(manifest),
+                    source_manifest=str(source), source_manifest_sha256=sha256(source),
+                    source_samples=source_count, selected_samples=len(rows),
+                    labeled_samples=sum(r['label'] is not None for r in rows),
+                    exploratory_samples=sum(r['label'] is None for r in rows),
+                    stress_suite=args.stress_suite, samples=rows)
+    if args.stress_suite:
+        evidence.update(replicates=sorted({r['stress']['replicate'] for r in rows}),
+                        consistency_pairs=sum(r['stress']['semantic_preserving'] for r in rows))
+    write_json(out / 'fixtures.json', evidence)
+    return labels, rows, manifest, evidence
 
 
 def environment():
@@ -192,6 +243,42 @@ def inspect_result(cell, directory, labels, samples):
                         measurements={k: report.get(k) for k in (
                             'latency_s', 'generation_s', 'peak_allocated_bytes', 'peak_reserved_bytes')},
                         model_load_and_processor_s=backend.get('model_load_and_processor_s'))
+        if cell.get('stress_suite'):
+            from .stress import summarize
+            require(actual.get('stress_suite') is True and actual.get('manifest') == cell['manifest'],
+                    'stress manifest/mode mismatch')
+            require(meta.get('manifest_sha256') == cell['manifest_sha256'] and
+                    meta.get('config_sha256') == cell['config_sha256'], 'input/config hash mismatch')
+            for row, sample in zip(records, samples):
+                require(all(row.get(k) == sample[k] for k in
+                            ('label', 'synthetic', 'stress', 'pixels_sha256')),
+                        f"stress input provenance mismatch: {sample['id']}")
+            # Recompute from raw per-sample evidence; missing/incorrect aggregate files fail closed.
+            stress = json.loads((directory / 'stress_metrics.json').read_text())
+            recomputed = summarize(records, labels)
+            require(all(stress.get(k) == v for k, v in recomputed.items()), 'stress metrics mismatch')
+            require(stress.get('evidence_level') == 'gpu_synthetic' and
+                    stress.get('pipeline_test_only') is False, 'missing stress GPU evidence')
+            labeled = [r for r in records if r['label'] is not None]
+            exploratory = [r for r in records if r['label'] is None]
+            classification = metrics([r['label'] for r in labeled], [r['prediction'] for r in labeled], labels)
+            require(all(report.get(k) == v for k, v in classification.items()), 'classification metrics mismatch')
+            require(report.get('total_samples') == len(samples) and
+                    report.get('labeled_samples') == len(labeled) and
+                    report.get('exploratory_samples') == len(exploratory), 'scoring denominators mismatch')
+            saved_exploratory = [json.loads(line) for line in
+                                (directory / 'exploratory_predictions.jsonl').read_text().splitlines()]
+            require(saved_exploratory == exploratory, 'exploratory predictions missing or mislabeled')
+            measurements = {k: distribution([r[k] for r in records]) for k in
+                            ('latency_s', 'generation_s', 'peak_allocated_bytes', 'peak_reserved_bytes')}
+            require(all(report.get(k) == v for k, v in measurements.items()), 'measurement summaries mismatch')
+            def invalid_rate(rows):
+                return sum(r['prediction'] not in labels for r in rows) / len(rows) if rows else None
+            observed.update(classification=classification,
+                            morphology={k: v for k, v in stress.items() if k != 'pairs'},
+                            invalid_output_rates=dict(all_samples=invalid_rate(records),
+                                                      labeled=invalid_rate(labeled),
+                                                      exploratory=invalid_rate(exploratory)))
     except (OSError, ValueError, TypeError, KeyError) as exc:
         errors.append(f'{type(exc).__name__}: {exc}')
     return dict(checks_passed=not errors, errors=errors, warnings=warnings, observed=observed)
@@ -231,12 +318,21 @@ def main(argv=None):
     write_json(out / 'summary.json', summary)
     try:
         write_json(out / 'environment.json', environment())
-        cfg = load_config(CONFIG)
-        labels = [x['id'] for x in cfg['classes']]
-        samples = load_manifest(MANIFEST, labels, out / 'fixture_check', cfg.get('render', {}))
-        if not all(row['synthetic'] is True for row in samples):
-            raise ValueError('Smoke entrypoint accepts only checked-in synthetic fixtures')
-        write_json(out / 'fixtures.json', dict(config_sha256=sha256(CONFIG), manifest_sha256=sha256(MANIFEST), samples=samples))
+        labels, samples, manifest, evidence = prepare_inputs(args, out)
+        plan = build_plan(args, out, manifest)
+        directories = [benchmark_parser().parse_args(c['command'][3:]).output for c in plan]
+        if len(set(directories)) != len(plan):
+            raise ValueError('experiment directories must be unique')
+        for cell in plan:
+            cell.update(config_sha256=evidence['config_sha256'], manifest_sha256=evidence['manifest_sha256'])
+        write_json(out / 'plan.json', plan)
+        summary.update(stress_suite=args.stress_suite, selected_samples=len(samples),
+                       labeled_samples=evidence['labeled_samples'],
+                       exploratory_samples=evidence['exploratory_samples'],
+                       planned_predictions=len(plan) * len(samples),
+                       excluded_warmup_predictions=len(plan))
+        if args.stress_suite:
+            summary.update(replicates=evidence['replicates'], consistency_pairs=evidence['consistency_pairs'])
         if args.check_only:
             summary['status'] = 'configuration_checked'
             print(f'Configuration checked: {len(plan)} cells; no checkpoint/CUDA inference performed')

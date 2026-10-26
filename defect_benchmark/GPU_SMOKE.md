@@ -55,6 +55,13 @@ and the checked-in synthetic manifest/images; it writes a plan and frozen fixtur
 hashes. `configuration_checked` / `not_executed` must not be reported as GPU success.
 The existing GitHub CPU workflow runs these checks, with no GPU allocation.
 
+For the optional morphology matrix, use a checkout containing the integration stacked
+on PR #3 and pass **both** `--stress-suite --manifest <stress-manifest.jsonl>`.
+See [STRESS_TEST.md](STRESS_TEST.md#optional-automated-gpu-comparison-matrix) for full and
+pair-preserving small plans, CPU-only validation and separate robustness summaries.
+The default remains the five checked-in images. A custom manifest without explicit
+stress opt-in is rejected; the wrapper accepts only explicitly synthetic stress data.
+
 ## Run the eight-cell GPU matrix
 
 ```bash
@@ -156,4 +163,5 @@ Remaining validation: run the default eight cells on an actual compatible GPU,
 inspect both strict EOS/adherence observations and constrained gates, and retain
 environment/log evidence. CPU fixture/mock tests cannot satisfy this gate. Only an
 approved, representative labeled fab dataset could support a later accuracy study;
-this entrypoint intentionally has no custom manifest/data-upload option.
+this entrypoint's optional manifest path accepts synthetic stress suites only and
+provides no data-upload or fab-data evaluation path.

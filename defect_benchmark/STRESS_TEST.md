@@ -5,6 +5,37 @@ It is optional in the existing GPU smoke orchestrator: `synthetic.py`, checked-i
 the five-image default and all training paths are unchanged. No model ranking, GPU
 execution or real fab accuracy is established by CPU/mock tests.
 
+## Checkout PR #4 before generating or planning
+
+The GPU matrix flags require PR #4, branch `feat/gpu-morphology-matrix` (stacked
+on PR #3). Use this complete checkout sequence from a new parent directory:
+
+```bash
+git clone --single-branch --branch feat/gpu-morphology-matrix https://github.com/jasonjiang8866/Qwen-VL-Series-Finetune.git
+cd Qwen-VL-Series-Finetune
+git fetch origin feat/gpu-morphology-matrix
+DDM_COMMIT=f762ec2e45b0e8908af4d966ba038f890ea26455
+git checkout --detach "$DDM_COMMIT"
+test "$(git rev-parse HEAD)" = "$DDM_COMMIT"
+git rev-parse HEAD
+```
+
+This pins the same reviewed PR #4 implementation baseline as
+[GPU_SMOKE.md](GPU_SMOKE.md#checkout-pr-4-and-pin-the-code-version). For an existing
+clone, start at `git fetch` from its root. A branch name or `FETCH_HEAD` can change;
+for a later reviewed version, substitute its full 40-character SHA and record it
+with the experiment. Do not switch back to PR #2's
+`feat/defect-zero-shot-benchmark` branch when following the CUDA installation guide:
+that baseline lacks the GPU stress-matrix flags. No PR merge is needed.
+
+For the CPU generation and plan checks below, only Python and Pillow are needed:
+
+```bash
+python3.12 -m venv .venv-ddm
+source .venv-ddm/bin/activate
+python -m pip install Pillow==11.3.0
+```
+
 ## Generate once, reuse across experiments
 
 From repository root, Python 3.10+ and Pillow 11.3.0:
@@ -97,7 +128,7 @@ behavior under that prompt, not whether the model is correct.
 
 ### Optional automated GPU comparison matrix
 
-Use a checkout containing this change (stacked on PR #3), rather than PR #2's branch.
+Keep the pinned PR #4 checkout from the steps above.
 Generate the dataset as above, then validate the **complete** experiment plan on CPU:
 
 ```bash
@@ -147,6 +178,7 @@ existing meanings. Each cell gets a fresh sequential process and model load.
 
 | Plan (one experiment repeat) | Cells | Measured predictions | Excluded warmups |
 | --- | ---: | ---: | ---: |
+| Default smoke, no stress flags, five checked-in images | 8 | 40 | 8 |
 | Replicate 0, Qwen3 NF4, definitions, strict + constrained | 2 | 136 | 2 |
 | Full 204 images, both models/precisions, definitions | 8 | 1,632 | 8 |
 | Full 204 images, both models/precisions, all three prompts | 24 | 4,896 | 24 |

@@ -2,6 +2,8 @@
 import contextlib
 import io
 import json
+import re
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -113,6 +115,37 @@ class GPUStressTests(unittest.TestCase):
         for cell in json.loads((self.out / 'plan.json').read_text()):
             self.assertNotIn('--stress-suite', cell['command'])
             self.assertEqual(cell['manifest'], str(smoke.MANIFEST))
+
+    def test_documented_cpu_plans(self):
+        """Run the actual copyable plan commands; forbid CUDA/inference via check()."""
+        guides = {
+            'GPU_SMOKE.md': [(8, 5, 40, False)],
+            'STRESS_TEST.md': [(24, 204, 4896, True), (2, 68, 136, True)],
+        }
+        for guide, expected in guides.items():
+            text = (smoke.ROOT / 'defect_benchmark' / guide).read_text()
+            commands = [shlex.split(line) for block in re.findall(r'```bash\n(.*?)```', text, re.S)
+                        for line in block.replace('\\\n', ' ').splitlines()
+                        if line.startswith('python -m defect_benchmark.gpu_smoke --check-only')]
+            self.assertEqual(len(commands), len(expected), guide)
+            for index, (command, (cells, samples, predictions, stress)) in enumerate(zip(commands, expected)):
+                with self.subTest(guide=guide, command=command):
+                    argv = command[3:]
+                    self.assertIn('--check-only', argv)
+                    if '--manifest' in argv:
+                        pos = argv.index('--manifest') + 1
+                        argv[pos] = argv[pos].replace('/tmp/ddm-stress-v1', str(self.dataset))
+                    self.out = self.root / f'{guide}-{index}'
+                    argv[argv.index('--output') + 1] = str(self.out)
+                    summary = self.check(argv)
+                    self.assertEqual(summary['status'], 'configuration_checked')
+                    self.assertEqual(summary['evidence_level'], 'not_executed')
+                    self.assertEqual(summary['planned_cells'], cells)
+                    self.assertEqual(summary['selected_samples'], samples)
+                    self.assertEqual(summary['planned_predictions'], predictions)
+                    self.assertEqual(summary['stress_suite'], stress)
+                    self.assertEqual(summary['cells'], [])
+                    self.assertFalse((self.out / 'preflight.json').exists())
 
     def write_corrupt_manifest(self, mutate):
         rows = [json.loads(s) for s in (self.dataset / 'manifest.jsonl').read_text().splitlines()]

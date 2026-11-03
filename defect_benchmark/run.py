@@ -26,7 +26,12 @@ def execute(args):
     prompt = build_prompt(cfg, args.prompt_strategy)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)  # never overwrite another run
-    rows = load_manifest(args.manifest, labels, out / 'inputs', cfg.get('render', {}))
+    stress_suite = getattr(args, 'stress_suite', False)
+    rows = load_manifest(args.manifest, labels, out / 'inputs', cfg.get('render', {}),
+                         stress_suite=stress_suite)
+    if stress_suite:
+        from .stress import validate_suite
+        validate_suite(rows, cfg)
     synthetic_only = all(x['synthetic'] is True for x in rows)
     real_only = all(x['synthetic'] is False for x in rows)
     evidence = ('cpu_mock' if args.backend == 'mock' else
@@ -70,7 +75,21 @@ def execute(args):
                 file.write(json.dumps(record) + '\n')
                 file.flush()
                 predictions.append(record)
-        report = metrics([x['label'] for x in rows], [x['prediction'] for x in predictions], labels)
+        labeled = [x for x in predictions if x['label'] is not None]
+        report = metrics([x['label'] for x in labeled], [x['prediction'] for x in labeled], labels)
+        if stress_suite:
+            from .stress import summarize
+            stress_report = summarize(predictions, labels)
+            stress_report.update(evidence_level=evidence, pipeline_test_only=args.backend == 'mock',
+                                 model_quality_evaluation=args.backend != 'mock',
+                                 prompt_strategy=args.prompt_strategy, output_mode=args.output_mode)
+            (out / 'stress_metrics.json').write_text(json.dumps(stress_report, indent=2))
+            exploratory = [x for x in predictions if x['label'] is None]
+            (out / 'exploratory_predictions.jsonl').write_text(
+                ''.join(json.dumps(x) + '\n' for x in exploratory))
+            report.update(total_samples=len(predictions), labeled_samples=len(labeled),
+                          exploratory_samples=len(exploratory),
+                          accuracy_scope='labeled synthetic anchors and preserving variants only')
         report.update(backend=args.backend, model_quality_evaluation=args.backend != 'mock',
                       evidence_level=evidence, synthetic_only=synthetic_only,
                       real_fab_accuracy_validated=False,
@@ -96,6 +115,8 @@ def parser():
     p.add_argument('--manifest', required=True)
     p.add_argument('--output', required=True)
     p.add_argument('--backend', choices=BACKENDS, default='transformers')
+    p.add_argument('--stress-suite', action='store_true',
+                   help='Validate paired synthetic stress metadata; exclude null labels from accuracy')
     p.add_argument('--model', default='Qwen/Qwen2.5-VL-3B-Instruct')
     p.add_argument('--revision', default='main', help='Pin an immutable HF commit for comparisons')
     p.add_argument('--local-files-only', action='store_true')

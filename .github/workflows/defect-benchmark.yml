@@ -34,6 +34,10 @@ jobs:
         run: |
           python -m defect_benchmark.stress --output /tmp/ddm-stress --seed 42 --replicates 3
           for manifest in manifest coordinates; do
+            python -m defect_benchmark.gpu_smoke --check-only --stress-suite \
+              --manifest "/tmp/ddm-stress/${manifest}.jsonl" \
+              --prompt-strategies definitions geometry contrastive \
+              --output "/tmp/stress-gpu-plan-${manifest}"
             for strategy in definitions geometry contrastive; do
               for mode in constrained strict; do
                 python -m defect_benchmark.run \

@@ -1,9 +1,43 @@
 # Synthetic morphology robustness stress test
 
 This opt-in suite probes sensitivity to controlled changes in **inspection defect coordinates**.
-It is independent of the five-image GPU smoke: `synthetic.py`, the checked-in fixtures,
-`gpu_smoke.py`, its defaults and all training paths are unchanged. No model ranking, GPU
+It is optional in the existing GPU smoke orchestrator: `synthetic.py`, checked-in fixtures,
+the five-image default and all training paths are unchanged. No model ranking, GPU
 execution or real fab accuracy is established by CPU/mock tests.
+
+## Checkout master before generating or planning
+
+The GPU matrix flags require the PR #4 implementation to be integrated into master.
+Use this complete checkout sequence from a new parent directory:
+
+```bash
+set -e
+git clone --single-branch --branch master https://github.com/jasonjiang8866/Qwen-VL-Series-Finetune.git
+cd Qwen-VL-Series-Finetune
+git fetch origin master:refs/remotes/origin/master
+DDM_COMMIT=89f02add7e05fb1934e4828ca96c469d516d637a
+git merge-base --is-ancestor "$DDM_COMMIT" origin/master
+git checkout --detach "$DDM_COMMIT"
+test "$(git rev-parse HEAD)" = "$DDM_COMMIT"
+git rev-parse HEAD
+```
+
+This pins the same reviewed implementation as
+[GPU_SMOKE.md](GPU_SMOKE.md#checkout-master-and-pin-the-code-version). The ancestor
+check and `set -e` stop setup if master does not contain it. In an existing clean
+clone, run `set -e` and start at `git fetch` from its root. A branch name or
+`FETCH_HEAD` can change; for a later reviewed version, substitute its full
+40-character SHA, repeat the ancestry check and record the pin with the experiment.
+Use the master guides for setup, including CUDA installation; the pinned original
+implementation tree retains historical guide text from before its integration.
+
+For the CPU generation and plan checks below, only Python and Pillow are needed:
+
+```bash
+python3.12 -m venv .venv-ddm
+source .venv-ddm/bin/activate
+python -m pip install Pillow==11.3.0
+```
 
 ## Generate once, reuse across experiments
 
@@ -54,8 +88,8 @@ PNG re-encoding with identical decoded pixels is accepted. This checks preproces
 model-specific resizing/tokenization still occurs inside the unchanged backend.
 
 Earlier PR #3 datasets without `pixels_sha256` are rejected: regenerate them in a new
-directory. Do not backfill the expected hash from unverified PNGs. The suite is still
-pre-merge and uses the same v1 morphology/seed policy so coordinates remain reproducible.
+directory. Do not backfill the expected hash from unverified PNGs. The suite retains
+the same v1 morphology/seed policy so coordinates remain reproducible.
 Manifests are the trusted reference: these fingerprints detect accidental corruption and
 mis-pairing, not coordinated rewriting of both data and expected hashes; they are not signatures.
 
@@ -94,6 +128,83 @@ mixed, blank, partial-ring or other ambiguous samples. Such predictions describe
 behavior under that prompt, not whether the model is correct.
 
 ## Run a real model only in an already prepared environment
+
+### Optional automated GPU comparison matrix
+
+Keep the pinned checkout from the steps above.
+Generate the dataset as above, then validate the **complete** experiment plan on CPU:
+
+```bash
+python -m defect_benchmark.gpu_smoke --check-only --stress-suite \
+  --manifest /tmp/ddm-stress-v1/manifest.jsonl \
+  --prompt-strategies definitions geometry contrastive \
+  --output /tmp/ddm-stress-plan-001
+```
+
+`--stress-suite` and `--manifest` must be supplied together. `coordinates.jsonl` is also
+accepted. With neither option, the original eight-cell, five-image smoke is unchanged;
+custom manifests cannot silently replace those fixtures. Only explicitly synthetic inputs
+are accepted. Every source row is checked for RGB pixel fingerprint, taxonomy/render config,
+semantic eligibility and reference pairing **before** CUDA preflight or inference. Old
+datasets without fingerprints must be regenerated. No weights, torch import or inference
+are required for `--check-only`; `configuration_checked` / `not_executed` is CPU evidence.
+
+The wrapper freezes validated RGB inputs in `fixture_check/` and writes
+`selected_manifest.jsonl` pointing to those copies. All children use that same manifest;
+each child rechecks pixels/config/pairs. Original source manifest and selected manifest
+hashes, selected IDs, labels, seeds, and pair counts are retained in `fixtures.json`.
+`plan.json` records exact pinned revisions, hashes and isolated subprocess output paths.
+Never edit a frozen run directory; keep the whole root for reproducibility.
+
+For a smaller **future GPU** validation on an existing machine, first check this plan:
+
+```bash
+python -m defect_benchmark.gpu_smoke --check-only --stress-suite \
+  --manifest /tmp/ddm-stress-v1/manifest.jsonl --stress-replicates 0 \
+  --models qwen3 --bits 4 --output-modes strict constrained \
+  --output /tmp/ddm-stress-small-plan-001
+```
+
+This selects all 68 images of replicate ID 0, including its five anchors and all variants;
+it does not take the first N images. IDs are zero-based dataset replicate IDs, distinct
+from `--repeats`, which repeats entire model experiments. Unknown/negative replicate IDs
+fail. Every source row is validated even when selecting a subset, and reference closure
+is checked again after selection. To reduce data further, generate a separate suite with
+`--replicates 1`; it retains one complete paired replicate. Do not truncate manifests.
+
+After separately preparing a compatible CUDA environment using [GPU_SMOKE.md](GPU_SMOKE.md),
+remove `--check-only` and choose a **new** output root to run either reviewed plan. Nothing
+here provisions or starts a paid GPU. The default per-cell timeout is 3,600 seconds,
+including model download/load; use `--timeout` when a full stress cell needs longer.
+`--local-files-only`, `--repeats`, model/precision/output/prompt filters retain their
+existing meanings. Each cell gets a fresh sequential process and model load.
+
+| Plan (one experiment repeat) | Cells | Measured predictions | Excluded warmups |
+| --- | ---: | ---: | ---: |
+| Default smoke, no stress flags, five checked-in images | 8 | 40 | 8 |
+| Replicate 0, Qwen3 NF4, definitions, strict + constrained | 2 | 136 | 2 |
+| Full 204 images, both models/precisions, definitions | 8 | 1,632 | 8 |
+| Full 204 images, both models/precisions, all three prompts | 24 | 4,896 | 24 |
+
+Each matrix cell retains the existing CUDA/NF4/EOS checks, logs, failure isolation,
+latency and VRAM measurements. `summary.json` additionally separates:
+
+- `observed.classification`: labeled-only accuracy/F1/confusion and invalid rate.
+- `observed.morphology`: anchors, preserving variants, family/severity/source-class
+  breakdowns, paired consistency/coverage and conditional retention. Full pair records
+  remain in `<cell>/benchmark/stress_metrics.json`.
+- `observed.invalid_output_rates`: all samples, labeled samples and exploratory samples
+  separately. Exploratory outputs are retained and never enter accuracy/F1.
+- `observed.measurements`: latency/generation time and allocated/reserved memory
+  distributions over all measured samples. Model load time remains separate.
+
+The wrapper verifies input/config hashes and prediction provenance, recomputes the
+classification, morphology and cost summaries, and checks the exploratory output file.
+Missing or inconsistent artifacts fail the cell; correctly rejected invalid strict
+outputs remain adherence observations rather than infrastructure failures. Infrastructure
+`passed` does not imply good classification or real fab accuracy. CPU mock results,
+synthetic GPU inference, and approved labeled fab evaluation are separate evidence levels;
+only CPU configuration/mock validation has been performed for this integration.
 
 Use the separate CUDA environment and checkpoint pins in [GPU_SMOKE.md](GPU_SMOKE.md).
 The following is an example for an existing single GPU; it does not provision a machine:
@@ -165,6 +276,9 @@ re-encoding and text metadata changes with identical RGB pixels remain valid.
 CI generates the full three-replicate suite and runs both manifests through all six
 prompt/output cells (12 CPU mock runs). No checkpoint download, enterprise data or CUDA is
 needed for those steps.
+CI also checks both manifests against all 24 planned GPU cells without starting them.
+CPU orchestration tests cover full/small plans, pair-preserving selection, input rejection
+before preflight, unchanged defaults, directory isolation, and fabricated result contracts.
 
 Independent CPU reproduction on parent commit `a172efe82cb8e5147941e53f853961fbb73bbb6a`
 confirmed that the old loader plus suite validator accepted all three cases: sample 00000's

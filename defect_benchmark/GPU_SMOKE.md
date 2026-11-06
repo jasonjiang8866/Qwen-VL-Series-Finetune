@@ -6,18 +6,49 @@ uploads inputs, trains a model, or merges a PR. Use an existing Linux x86-64 RTX
 32 GB workstation or a user-provisioned RunPod CUDA GPU. No real checkpoint/CUDA/NF4
 validation has yet been performed for this entrypoint; CPU tests validate orchestration only.
 
-## Environment on a workstation or existing Pod
+## Checkout master and pin the code version
 
-Use Python 3.12 and an independent virtual environment. On RunPod, put the repository,
-Hugging Face cache and results on your mounted persistent volume (example: `/workspace`).
-Obtain the **reviewed PR commit**, not `master`, and record it before running:
+Both the original five-image smoke and the optional 204-image morphology matrix can
+use the same reviewed implementation from master. From a new parent directory:
 
 ```bash
-git clone https://github.com/jasonjiang8866/Qwen-VL-Series-Finetune.git
+set -e
+git clone --single-branch --branch master https://github.com/jasonjiang8866/Qwen-VL-Series-Finetune.git
 cd Qwen-VL-Series-Finetune
-git fetch origin feat/defect-zero-shot-benchmark
-git checkout --detach FETCH_HEAD
+git fetch origin master:refs/remotes/origin/master
+DDM_COMMIT=89f02add7e05fb1934e4828ca96c469d516d637a
+git merge-base --is-ancestor "$DDM_COMMIT" origin/master
+git checkout --detach "$DDM_COMMIT"
+test "$(git rev-parse HEAD)" = "$DDM_COMMIT"
 git rev-parse HEAD
+```
+
+This full SHA pins the reviewed PR #4 implementation, including its tests and CI.
+The ancestor check requires that implementation to be merged into master; `set -e`
+stops this sequence if it is absent. PR #4's original "merged" status alone is not
+sufficient because it targeted a feature branch. No feature-branch checkout is needed.
+Master may advance; fetching it or checking out `FETCH_HEAD` alone does not pin a
+repeatable experiment. For a later reviewed version, replace `DDM_COMMIT` with its
+**full 40-character commit SHA** and repeat the fetch/ancestor/detach/assert steps.
+In an existing clean clone, run `set -e` and start at `git fetch` from its root.
+Keep local changes separate; retain the recorded SHA with results and the package
+inventory. This pin preserves the original implementation tree, whose historical
+guide text predates the master integration; use these master guides for setup.
+
+With no `--stress-suite` or `--manifest`, the default remains **8 cells × 5 checked-in
+images**. The optional matrix requires both flags and a separately generated suite;
+its default dataset has **204 images**, not five. See
+[STRESS_TEST.md](STRESS_TEST.md#optional-automated-gpu-comparison-matrix) for full and
+pair-preserving small CPU plans.
+
+## Environment on a workstation or existing Pod
+
+After the checkout above, use Python 3.12 and an independent virtual environment.
+On RunPod, put the repository, Hugging Face cache and results on your mounted
+persistent volume (example: `/workspace`). For CPU-only plans, skip these CUDA
+installation steps and use [CPU configuration check](#cpu-configuration-check).
+
+```bash
 python3.12 -m venv .venv-ddm
 source .venv-ddm/bin/activate
 python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
@@ -26,9 +57,7 @@ python -m pip check
 nvidia-smi
 ```
 
-The fetch/checkout resolves the PR branch once to a detached commit. For an exact
-repeat, use `git checkout --detach <recorded-full-SHA>` instead and retain the same
-package inventory. The driver must support the cu128 wheel and the GPU. A template's installed
+The driver must support the cu128 wheel and the GPU. A template's installed
 CUDA toolkit alone is not sufficient: verify the runtime with the preflight below.
 PyTorch's CUDA 12.8 wheels support Blackwell; bitsandbytes 0.48.1 supplies CUDA 12.8+
 builds with SM120 support on Linux x86-64. These are dependency support statements,
@@ -42,7 +71,8 @@ Official baseline references:
 
 ## CPU configuration check
 
-Only Pillow is needed for this path; no torch import, checkpoint download or inference:
+After the pinned checkout above, use an independent Python environment with only
+Pillow for this path; no torch import, checkpoint download or inference:
 
 ```bash
 python -m pip install Pillow==11.3.0
@@ -54,6 +84,13 @@ It checks CLI argument compatibility, immutable model revisions, unique cell pat
 and the checked-in synthetic manifest/images; it writes a plan and frozen fixture
 hashes. `configuration_checked` / `not_executed` must not be reported as GPU success.
 The existing GitHub CPU workflow runs these checks, with no GPU allocation.
+
+For the optional morphology matrix, retain the pinned checkout above and pass
+**both** `--stress-suite --manifest <stress-manifest.jsonl>`.
+See [STRESS_TEST.md](STRESS_TEST.md#optional-automated-gpu-comparison-matrix) for full and
+pair-preserving small plans, CPU-only validation and separate robustness summaries.
+The default remains the five checked-in images. A custom manifest without explicit
+stress opt-in is rejected; the wrapper accepts only explicitly synthetic stress data.
 
 ## Run the eight-cell GPU matrix
 
@@ -156,4 +193,5 @@ Remaining validation: run the default eight cells on an actual compatible GPU,
 inspect both strict EOS/adherence observations and constrained gates, and retain
 environment/log evidence. CPU fixture/mock tests cannot satisfy this gate. Only an
 approved, representative labeled fab dataset could support a later accuracy study;
-this entrypoint intentionally has no custom manifest/data-upload option.
+this entrypoint's optional manifest path accepts synthetic stress suites only and
+provides no data-upload or fab-data evaluation path.
